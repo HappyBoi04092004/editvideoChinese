@@ -4,7 +4,7 @@
 预设，其余维度未收录，记为 ``None``）；通道事实取调用通道或调用端点的声明。生效值是原值叠加能力覆盖的结果，
 与执行层读到的一致。
 
-图片的参考图上限是两侧求值的结果（``lib.backends.image_capabilities.image_reference_limit``），没有自己的能力覆盖，
+图片的参考图上限先两侧求值，再由能力覆盖整维替换（``lib.backends.image_capabilities.image_reference_limit``），
 按生效的图生图求值：``None`` 为未收录，``0`` 为不接受参考图（条目记为 0 张，或图生图不在生效能力里）。图生图的原值
 读同一个求值结果：模型事实与调用通道都允许、且参考图上限接受参考图，与任务类型桶的候选、执行时的校验一致；条目把
 参考图上限记为 0 张时图生图为不支持。文生图的原值同样取模型事实与调用通道的交集。
@@ -45,8 +45,8 @@ from lib.backends.image_capabilities import (
     builtin_channel_capabilities,
     builtin_channel_reference_limit,
     image_reference_limit,
+    image_reference_override,
 )
-from lib.backends.input_limits import InputLimit
 from lib.catalog.query import CatalogModel
 from lib.custom_provider.capabilities import (
     AUDIO_OVERRIDE_KEYS,
@@ -97,6 +97,12 @@ _IMAGE_CAPABILITY_BY_KEY: Mapping[str, ImageCapability] = {
     "image_to_image": ImageCapability.IMAGE_TO_IMAGE,
 }
 
+#: 图片覆盖维度 → 调用通道须实现的能力，未实现时该维度不可编辑：参考图上限只对图生图路径有意义。
+_IMAGE_EDITABLE_REQUIRES: Mapping[str, ImageCapability] = {
+    **_IMAGE_CAPABILITY_BY_KEY,
+    "max_reference_images": ImageCapability.IMAGE_TO_IMAGE,
+}
+
 
 @dataclass(frozen=True)
 class CapabilityView:
@@ -113,10 +119,11 @@ class CapabilityView:
     editable: tuple[str, ...] = ()
     base: dict[str, object] = field(default_factory=dict)
     overrides: dict[str, object] = field(default_factory=dict)
+    effective_values: dict[str, object] | None = None
 
     @property
     def effective(self) -> dict[str, object]:
-        return {**self.base, **self.overrides}
+        return self.effective_values if self.effective_values is not None else {**self.base, **self.overrides}
 
     @property
     def displayed(self) -> tuple[str, ...]:
@@ -127,6 +134,18 @@ def overridable_keys(media_type: str) -> frozenset[str]:
     """该媒体类型可以覆盖的全部维度：模型事实，视频另有通道事实。"""
     keys = MODEL_FACT_OVERRIDE_KEYS.get(media_type, frozenset())
     return keys | CHANNEL_FACT_OVERRIDE_KEYS if media_type == "video" else keys
+
+
+def override_value_check(media_type: str, key: str, value: object) -> tuple[bool, str]:
+    """覆盖值能否整维替换该维度，以及该维度期望的值形状（写入被拒时的文案参数）。
+
+    视频的通道事实按 ``VideoCapabilities`` 字段校验，其余按模型事实校验；图片的参考图上限与视频通道事实同名，
+    按模型事实校验。自定义供应商与内置用户添加模型的写入校验共用这一判定。
+    """
+    if media_type == "video" and key in CHANNEL_FACT_OVERRIDE_KEYS:
+        expected = CAPABILITY_OVERRIDE_FIELDS[key]
+        return capability_value_matches(value, expected), capability_type_name(expected)
+    return model_fact_value_matches(key, value), model_fact_type_name(key)
 
 
 def _ordered(keys: frozenset[str] | set[str]) -> tuple[str, ...]:
@@ -229,14 +248,14 @@ def custom_capability_view(
         case "image":
             image = image_model_facts(model_id, None, entry_binding=entry_binding)
             implemented = spec.image_capabilities or frozenset()
-            editable = {key for key in editable if _IMAGE_CAPABILITY_BY_KEY[key] in implemented}
-            base = _image_base(
+            return _image_view(
                 implemented=implemented,
                 text_to_image=image.text_to_image is not False,
                 image_to_image=image.image_to_image is not False,
                 entry_limit=image.max_reference_images,
                 channel_limit=endpoint_reference_image_limit(spec),
-                image_to_image_override=(applied_overrides or {}).get("image_to_image"),
+                editable=editable,
+                overrides=applied_overrides or {},
             )
         case "video":
             video = video_model_facts(model_id, None, entry_binding=entry_binding)
@@ -305,29 +324,57 @@ def _image_base(
     image_to_image: bool,
     entry_limit: int | None,
     channel_limit: int | None,
-    image_to_image_override: object | None = None,
+    reference_override: int | None = None,
 ) -> dict[str, object]:
     """图片三维的原值，与任务类型桶的候选、执行时的校验读同一个求值结果（``image_reference_limit``）。
 
     ``text_to_image`` / ``image_to_image`` 是模型事实一侧（条目，对应不上条目时按允许算），与调用通道实现了的
     ``implemented`` 取交集。图生图另须参考图上限接受参考图：条目记为 0 张时为不支持。参考图上限按生效的图生图求值，
-    ``image_to_image_override`` 是图生图的能力覆盖（没有为 ``None``）。
+    ``reference_override`` 在两侧求值后整维替换上限。
     """
 
-    def reference_limit(supported: object) -> InputLimit[int]:
-        path = supported is True and ImageCapability.IMAGE_TO_IMAGE in implemented
-        return image_reference_limit(
-            capabilities={ImageCapability.IMAGE_TO_IMAGE} if path else set(),
-            entry_limit=entry_limit,
-            channel_limit=channel_limit,
-        )
-
-    effective_i2i = image_to_image if image_to_image_override is None else image_to_image_override
+    reference_limit = image_reference_limit(
+        capabilities=implemented if image_to_image else frozenset(),
+        entry_limit=entry_limit,
+        channel_limit=channel_limit,
+        override=reference_override,
+    )
     return {
         "text_to_image": text_to_image and ImageCapability.TEXT_TO_IMAGE in implemented,
-        "image_to_image": reference_limit(image_to_image).accepts_input,
-        "max_reference_images": reference_limit(effective_i2i).to_json(),
+        "image_to_image": reference_limit.accepts_input,
+        "max_reference_images": reference_limit.to_json(),
     }
+
+
+def _image_view(
+    *,
+    implemented: frozenset[ImageCapability],
+    text_to_image: bool,
+    image_to_image: bool,
+    entry_limit: int | None,
+    channel_limit: int | None,
+    editable: set[str],
+    overrides: Mapping[str, object],
+) -> CapabilityView:
+    editable = {key for key in editable if _IMAGE_EDITABLE_REQUIRES[key] in implemented}
+    base = _image_base(
+        implemented=implemented,
+        text_to_image=text_to_image,
+        image_to_image=image_to_image,
+        entry_limit=entry_limit,
+        channel_limit=channel_limit,
+    )
+    effective = _image_base(
+        implemented=implemented,
+        text_to_image=overrides.get("text_to_image", text_to_image) is True,
+        image_to_image=overrides.get("image_to_image", image_to_image) is True,
+        entry_limit=entry_limit,
+        channel_limit=channel_limit,
+        reference_override=image_reference_override(overrides),
+    )
+    return CapabilityView(
+        "image", editable=_ordered(editable), base=base, overrides=dict(overrides), effective_values=effective
+    )
 
 
 def _image_channel(provider_id: str, model_id: str, endpoint: str | None = None) -> frozenset[ImageCapability]:
@@ -351,18 +398,18 @@ def builtin_capability_view(
     editable = set(overridable_keys(media_type)) if not official else set()
     if media_type == "image":
         implemented = _image_channel(provider_id, model_id)
-        editable = {key for key in editable if _IMAGE_CAPABILITY_BY_KEY[key] in implemented}
         try:
             channel_limit = builtin_channel_reference_limit(provider_id, model_id)
         except ValueError:
             channel_limit = None
-        base = _image_base(
+        return _image_view(
             implemented=implemented,
             text_to_image="text_to_image" in base_model.capabilities,
             image_to_image="image_to_image" in base_model.capabilities,
             entry_limit=base_model.max_reference_images,
             channel_limit=channel_limit,
-            image_to_image_override=overrides.get("image_to_image"),
+            editable=editable,
+            overrides={} if official else overrides,
         )
     if official:
         return CapabilityView(media_type, base=base)
@@ -422,11 +469,7 @@ def check_user_added_overrides(
                 media_type=media_type,
                 capability=key,
             )
-        if key in CHANNEL_FACT_OVERRIDE_KEYS:
-            expected = CAPABILITY_OVERRIDE_FIELDS[key]
-            valid, expected_name = capability_value_matches(value, expected), capability_type_name(expected)
-        else:
-            valid, expected_name = model_fact_value_matches(key, value), model_fact_type_name(key)
+        valid, expected_name = override_value_check(media_type, key, value)
         if not valid:
             raise OverrideRejected(
                 "capability_override_invalid_value", model_id=model_id, capability=key, expected=expected_name
