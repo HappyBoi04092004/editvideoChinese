@@ -473,7 +473,7 @@ def _verify_and_get_payload(token: str) -> dict:
     if payload is None:
         raise HTTPException(
             status_code=401,
-            detail="token 无效或已过期",
+            detail="Token không hợp lệ hoặc đã hết hạn",
             headers={"WWW-Authenticate": "Bearer"},
         )
     return payload
@@ -486,7 +486,7 @@ async def _verify_and_get_payload_async(token: str) -> dict:
         if payload is None:
             raise HTTPException(
                 status_code=401,
-                detail="API Key 无效、已过期或不存在",
+                detail="API Key không hợp lệ, đã hết hạn hoặc không tồn tại",
                 headers={"WWW-Authenticate": "Bearer"},
             )
         return payload
@@ -515,7 +515,7 @@ async def get_current_user(
     if not token:
         raise HTTPException(
             status_code=401,
-            detail="未认证",
+            detail="Chưa xác thực",
             headers={"WWW-Authenticate": "Bearer"},
         )
     payload = await _verify_and_get_payload_async(token)

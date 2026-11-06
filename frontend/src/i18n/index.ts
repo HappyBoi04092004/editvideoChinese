@@ -60,6 +60,10 @@ function applyBrandPlaceholders(value: unknown): unknown {
   return value;
 }
 
+// Mặc định ngôn ngữ Tiếng Việt ('vi')
+const savedLang = typeof window !== 'undefined' ? localStorage.getItem('i18nextLng') : null;
+const initialLng = savedLang && (SUPPORTED_LANGUAGES as readonly string[]).includes(savedLang) ? savedLang : 'vi';
+
 // 返回 init Promise，调用方（main.tsx / test setup）await 后再 render，避免首屏闪 key。
 export const i18nReady = i18n
   .use(
@@ -79,7 +83,8 @@ export const i18nReady = i18n
   .use(LanguageDetector)
   .use(initReactI18next)
   .init({
-    fallbackLng: 'zh',
+    lng: initialLng,
+    fallbackLng: 'vi',
     supportedLngs: SUPPORTED_LANGUAGES,
     debug: false,
     interpolation: { escapeValue: false },

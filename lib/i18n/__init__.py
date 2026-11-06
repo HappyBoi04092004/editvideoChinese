@@ -30,10 +30,12 @@ from .zh import system as zh_system
 from .zh import templates as zh_templates
 from .zh import validation as zh_validation
 
+import os
+
 logger = logging.getLogger(__name__)
 
 # Default locale
-DEFAULT_LOCALE = "zh"
+DEFAULT_LOCALE = os.getenv("ARCREEL_DEFAULT_LOCALE", "vi")
 SUPPORTED_LOCALES = ["zh", "en", "vi"]
 
 # Mapping from locale code to human-readable language name

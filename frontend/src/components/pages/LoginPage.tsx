@@ -37,7 +37,7 @@ export function LoginPage() {
       const resp = await fetch("/api/v1/auth/token", {
         method: "POST",
         headers: {
-          "Accept-Language": i18n.language || "zh",
+          "Accept-Language": i18n.language || "vi",
         },
         body,
       });
