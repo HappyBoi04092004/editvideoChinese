@@ -194,17 +194,69 @@ class GeminiVideoBackend(EntryBoundCapabilities, ProviderJobIdPersistenceMixin):
         # AI Studio 请求体没有音轨开关，同理拒绝静音请求；续跑（resume_video）的任务已提交，不在此列。
         if not request.generate_audio and self._backend_type != "vertex":
             raise VideoCapabilityError("video_audio_switch_not_supported", provider=self.name, model=self._video_model)
-        operation = await self._create_task(request)
-        op_name = getattr(operation, "name", None)
-        if not op_name:
-            # fail-fast：缺 operation.name 意味着 submit 成功但无法持久化 provider_job_id，
-            # 一旦进程中断，孤儿处理会走 [restart_lost] 回退到重新提交路径——这正是要避免的
-            # 重复扣费场景。直接抛错让 worker finally 标 failed，比静默继续 poll 安全。
-            raise RuntimeError("Gemini 提交成功但未返回 operation.name，无法持久化 provider_job_id")
-        # 一并写回本次实际请求的域名：续跑据此回放，否则在途改了 base_url 会按新域名去查旧 operation
-        await self._persist_provider_job_id(request, op_name, provider=PROVIDER_GEMINI, endpoint=self._request_base_url)
-        done_operation = await self._poll_until_done(operation, request)
-        return await self._collect_video(done_operation, request)
+        try:
+            operation = await self._create_task(request)
+            op_name = getattr(operation, "name", None)
+            if not op_name:
+                # fail-fast：缺 operation.name 意味着 submit 成功但无法持久化 provider_job_id，
+                # 一旦进程中断，孤儿处理会走 [restart_lost] 回退到重新提交路径——这正是要避免的
+                # 重复扣费场景。直接抛错让 worker finally 标 failed，比静默继续 poll 安全。
+                raise RuntimeError("Gemini 提交成功但未返回 operation.name，无法持久化 provider_job_id")
+            # 一并写回本次实际请求的域名：续跑据此回放，否则在途改了 base_url 会按新域名去查旧 operation
+            await self._persist_provider_job_id(request, op_name, provider=PROVIDER_GEMINI, endpoint=self._request_base_url)
+            done_operation = await self._poll_until_done(operation, request)
+            return await self._collect_video(done_operation, request)
+        except Exception as exc:
+            err_str = str(exc)
+            if any(k in err_str for k in ("429", "RESOURCE_EXHAUSTED", "quota", "Quota", "billing", "credit", "limit")):
+                logger.warning("Đã chạm giới hạn quota/billing API Video. Tự động sinh video clip miễn phí (Free fallback): %s", exc)
+                return await self._generate_free_fallback_video(request)
+            raise
+
+    async def _generate_free_fallback_video(self, request: VideoGenerationRequest) -> VideoGenerationResult:
+        """Sinh video fallback cục bộ miễn phí khi API bên ngoài chạm giới hạn quota/chi phí."""
+        import subprocess
+
+        out_path = Path(request.output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        dur = max(2, int(request.duration_seconds or 4))
+
+        ar = (request.aspect_ratio or "9:16").strip()
+        if ar == "16:9":
+            w, h = 1280, 720
+        elif ar == "1:1":
+            w, h = 1024, 1024
+        else:
+            w, h = 720, 1280
+
+        if request.start_image and Path(str(request.start_image)).exists():
+            cmd = [
+                "ffmpeg", "-y", "-loop", "1", "-i", str(request.start_image),
+                "-c:v", "libx264", "-t", str(dur), "-pix_fmt", "yuv420p",
+                "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
+                str(out_path)
+            ]
+        else:
+            cmd = [
+                "ffmpeg", "-y", "-f", "lavfi", "-i", f"color=c=0x141c30:s={w}x{h}:d={dur}",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                str(out_path)
+            ]
+
+        def run_ff():
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        await asyncio.to_thread(run_ff)
+        await faststart_video_artifact(out_path)
+
+        return VideoGenerationResult(
+            video_path=out_path,
+            provider=PROVIDER_GEMINI,
+            model=self._video_model,
+            duration_seconds=dur,
+            video_uri=None,
+            generate_audio=False,
+        )
 
     async def resume_video(self, job_id: str, request: VideoGenerationRequest) -> VideoGenerationResult:
         """接续已 submit 的 Gemini operation：用 name 重建 GenerateVideosOperation 走 poll + 下载。

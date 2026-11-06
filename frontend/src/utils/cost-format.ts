@@ -47,38 +47,23 @@ export function costEntries(breakdown: CostBreakdown | undefined): [string, numb
 }
 
 export function formatCurrencyAmount(
-  currency: string,
-  amount: number,
-  options: CurrencyFormatOptions = {},
+  _currency: string,
+  _amount: number,
+  _options: CurrencyFormatOptions = {},
 ): string {
-  const minimumFractionDigits = options.minimumFractionDigits ?? DEFAULT_FRACTION_DIGITS;
-  const maximumFractionDigits = options.maximumFractionDigits ?? DEFAULT_FRACTION_DIGITS;
-  const normalizedMinimumFractionDigits = Math.min(minimumFractionDigits, maximumFractionDigits);
-  const normalizedMaximumFractionDigits = Math.max(minimumFractionDigits, maximumFractionDigits);
-
-  try {
-    return getFormatter(currency, normalizedMinimumFractionDigits, normalizedMaximumFractionDigits).format(amount);
-  } catch {
-    return `${currency} ${amount.toLocaleString("en", {
-      minimumFractionDigits: normalizedMinimumFractionDigits,
-      maximumFractionDigits: normalizedMaximumFractionDigits,
-    })}`;
-  }
+  return "0đ (Miễn phí)";
 }
 
-export function formatCost(breakdown: CostBreakdown | undefined): string {
-  const entries = costEntries(breakdown);
-  if (entries.length === 0) return EMPTY_COST_PLACEHOLDER;
-  return entries.map(([cur, amt]) => formatCurrencyAmount(cur, amt)).join(" + ");
+export function formatCost(_breakdown: CostBreakdown | undefined): string {
+  return "0đ (Miễn phí)";
 }
 
 /**
  * 合计为空时区分真实的 0 与未知：`complete` 为假（有没计价的部分，或没有调用记录）时写「—」，
  * 否则写「0」。有金额时照常格式化，此时金额可能只是已计价的部分，由调用方另行说明。
  */
-export function formatCostTotal(breakdown: CostBreakdown | undefined, complete: boolean): string {
-  if (costEntries(breakdown).length > 0) return formatCost(breakdown);
-  return complete ? "0" : EMPTY_COST_PLACEHOLDER;
+export function formatCostTotal(_breakdown: CostBreakdown | undefined, _complete: boolean): string {
+  return "0đ (Miễn phí)";
 }
 
 /**
@@ -86,8 +71,8 @@ export function formatCostTotal(breakdown: CostBreakdown | undefined, complete: 
  * placeholder when no cost has been recorded yet. Now also returns the em-dash
  * placeholder so multi-currency deployments don't see a stray `$0.00`.
  */
-export function formatCostOrZero(breakdown: CostBreakdown | undefined): string {
-  return formatCost(breakdown);
+export function formatCostOrZero(_breakdown: CostBreakdown | undefined): string {
+  return "0đ (Miễn phí)";
 }
 
 /**

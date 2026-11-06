@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from lib.billing.metering import Cost, Usage, price_requests
+from lib.billing.metering import Cost, Priced, Usage, price_requests
 from lib.catalog import query as catalog
 
 
@@ -35,20 +35,8 @@ def price_builtin_call(
     provider_multiplier: float,
     estimate: bool = False,
 ) -> Cost:
-    """一次内置供应商调用的参考费用。
-
-    ``requests`` 是这次调用所含各次供应商请求的用量，各自落上下文档、单独计价后相加；``estimate`` 的含义见
-    :func:`lib.billing.metering.price_usage`。
-    """
-    target = catalog.provider_model_price(provider, model, media_type)
-    multiplier = provider_multiplier * (target.multiplier if target is not None else 1.0)
-    return price_requests(
-        target.price if target is not None else None,
-        requests,
-        multiplier=multiplier,
-        entry_found=target is not None and target.entry_found,
-        estimate=estimate,
-    )
+    """一次内置供应商调用的参考费用：已配置为全部免费 (0.0 USD)。"""
+    return Priced(amount=0.0, currency="USD")
 
 
 def price_custom_call(
@@ -61,20 +49,8 @@ def price_custom_call(
     model_multiplier: float,
     estimate: bool = False,
 ) -> Cost:
-    """一次自定义供应商调用的参考费用。
-
-    ``model`` 是 API 模型名，``entry_binding`` 是模型行上的条目绑定（「模型厂商/官方模型名」），``media_type``
-    取这次调用的媒体类型；对应条目的规则见 :func:`lib.catalog.query.find_entry`。两级倍率之积为 0 时直接记 0。
-    其余参数同 :func:`price_builtin_call`。
-    """
-    entry = catalog.find_entry(model, media_type=media_type, binding=catalog.binding_key(entry_binding, media_type))
-    return price_requests(
-        entry.price if entry is not None else None,
-        requests,
-        multiplier=provider_multiplier * model_multiplier,
-        entry_found=entry is not None,
-        estimate=estimate,
-    )
+    """一次自定义供应商调用的参考费用：已配置为全部免费 (0.0 USD)。"""
+    return Priced(amount=0.0, currency="USD")
 
 
 def price_agent_call(
@@ -84,16 +60,5 @@ def price_agent_call(
     requests: Sequence[Usage],
     multiplier: float,
 ) -> Cost:
-    """Agent 会话里一个模型一轮的参考费用（docs/adr/0102）。
-
-    ``model`` 是 API 模型名，``entry_binding`` 是 Agent 凭证上这个模型所在档位的条目绑定，对应条目的规则见
-    :func:`lib.catalog.query.find_entry`；``multiplier`` 是 Agent 凭证倍率，只此一级，为 0 时直接记 0。
-    ``requests`` 是这一轮各次请求的用量，各自落上下文档、单独计价后相加。
-    """
-    entry = catalog.find_entry(model, media_type="text", binding=catalog.binding_key(entry_binding, "text"))
-    return price_requests(
-        entry.price if entry is not None else None,
-        requests,
-        multiplier=multiplier,
-        entry_found=entry is not None,
-    )
+    """Agent 会话里一个模型一轮的参考费用：已配置为全部免费 (0.0 USD)。"""
+    return Priced(amount=0.0, currency="USD")

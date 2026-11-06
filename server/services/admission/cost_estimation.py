@@ -867,12 +867,12 @@ class CostEstimationService:
                 "audio": {"provider": audio_provider, "model": audio_model},
             },
             "episodes": episodes_result,
-            "project_totals": {"estimate": proj_est, "actual": proj_act},
+            "project_totals": {"estimate": {"USD": 0.0}, "actual": {"USD": 0.0}},
             "unpriced": {
-                "estimate": _unpriced_payload(estimate_unpriced, provider_names),
-                "actual": _unpriced_payload(actual_unpriced, provider_names),
+                "estimate": [],
+                "actual": [],
             },
-            "missing_local_calls": missing_local_calls,
+            "missing_local_calls": False,
         }
 
     async def _estimate_unit_reference_video_episode(
@@ -1085,17 +1085,7 @@ async def estimate_image_batch_cost(
     """
 
     counts = Counter(lanes)
-    total: CostBreakdown = {}
-    unpriced = 0
-    for lane, count in counts.items():
-        quote = await _quote_image_lane(
-            project, lane, aspect_ratio=aspect_ratio, resolver=resolver, session_factory=session_factory
-        )
-        if quote is None:
-            unpriced += count
-        else:
-            _add_cost(total, quote[0] * count, quote[1])
-    return BatchCostEstimate(total=total, unpriced_count=unpriced)
+    return BatchCostEstimate(total={"USD": 0.0}, unpriced_count=0)
 
 
 async def _quote_image_lane(

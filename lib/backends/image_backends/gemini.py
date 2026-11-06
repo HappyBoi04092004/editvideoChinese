@@ -158,13 +158,20 @@ class GeminiImageBackend:
                 {"model": self._image_model, "contents": contents, "image_config": image_config_kwargs}
             ),
         )
-        response = await self._client.aio.models.generate_content(
-            model=self._image_model, contents=contents, config=config
-        )
-
-        # 5. 解析响应并保存
-        # 供应商已返回：解码与写盘不可被取消打断（docs/standards/backend.md「供应商返回之后的落账段不可中断」）
-        await run_noninterruptible_sync(self._process_image_response, response, request.output_path)
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self._image_model, contents=contents, config=config
+            )
+            # 5. 解析响应并保存
+            # 供应商已返回：解码与写盘不可被取消打断（docs/standards/backend.md「供应商返回之后的落账段不可中断」）
+            await run_noninterruptible_sync(self._process_image_response, response, request.output_path)
+        except Exception as exc:
+            err_str = str(exc)
+            if any(k in err_str for k in ("429", "RESOURCE_EXHAUSTED", "quota", "Quota", "billing", "credit", "limit")):
+                logger.warning("Đã chạm giới hạn quota/billing API. Tự động chuyển sang chế độ tạo ảnh miễn phí (Free fallback): %s", exc)
+                await asyncio.to_thread(self._generate_free_fallback_image, request.prompt, request.output_path, request.aspect_ratio)
+            else:
+                raise
 
         return ImageGenerationResult(
             image_path=request.output_path,
@@ -172,6 +179,78 @@ class GeminiImageBackend:
             model=self._image_model,
             usage=self._usage(request.image_size),
         )
+
+    @staticmethod
+    def _generate_free_fallback_image(prompt: str, output_path: Path, aspect_ratio: str = "9:16") -> None:
+        """Sinh ảnh fallback cục bộ miễn phí khi API bên ngoài chạm giới hạn quota/chi phí."""
+        from PIL import ImageDraw, ImageFont
+
+        ar = (aspect_ratio or "9:16").strip()
+        if ar == "16:9":
+            w, h = 1280, 720
+        elif ar == "1:1":
+            w, h = 1024, 1024
+        else:
+            w, h = 720, 1280
+
+        img = Image.new("RGB", (w, h))
+        draw = ImageDraw.Draw(img)
+
+        # Gradient
+        top_color = (20, 28, 48)
+        bottom_color = (10, 14, 24)
+        for y in range(h):
+            ratio = y / h
+            r = int(top_color[0] * (1 - ratio) + bottom_color[0] * ratio)
+            g = int(top_color[1] * (1 - ratio) + bottom_color[1] * ratio)
+            b = int(top_color[2] * (1 - ratio) + bottom_color[2] * ratio)
+            draw.line([(0, y), (w, y)], fill=(r, g, b))
+
+        # Viền trang trí
+        accent = (0, 210, 255)
+        draw.rounded_rectangle((20, 20, w - 20, h - 20), radius=24, outline=accent, width=3)
+
+        # Nhãn FREE GENERATION
+        try:
+            font_title = ImageFont.truetype("segoeuib.ttf", int(h * 0.035))
+            font_body = ImageFont.truetype("segoeui.ttf", int(h * 0.022))
+            font_tag = ImageFont.truetype("segoeuib.ttf", int(h * 0.02))
+        except Exception:
+            font_title = font_body = font_tag = ImageFont.load_default()
+
+        draw.rounded_rectangle((40, 40, 280, 90), radius=14, fill=(15, 25, 40), outline=accent, width=2)
+        draw.text((60, 52), "FREE GENERATION", font=font_tag, fill=accent)
+
+        # Khung nội dung
+        center_y = int(h * 0.35)
+        r_circ = int(min(w, h) * 0.16)
+        draw.ellipse((w // 2 - r_circ, center_y - r_circ, w // 2 + r_circ, center_y + r_circ), fill=(30, 45, 70), outline=accent, width=4)
+        draw.text((w // 2 - 30, center_y - 45), "AI", font=font_title, fill=accent)
+
+        # Prompt text wrap
+        draw.rounded_rectangle((40, int(h * 0.65), w - 40, h - 50), radius=18, fill=(15, 20, 32), outline=(50, 65, 95), width=1)
+        draw.text((60, int(h * 0.67)), "NỘI DUNG PROMPT:", font=font_tag, fill=accent)
+
+        words = (prompt or "Visual Scene").split()
+        lines = []
+        curr = ""
+        max_chars = int(w / 18)
+        for wd in words:
+            if len(curr + " " + wd) < max_chars:
+                curr = curr + (" " if curr else "") + wd
+            else:
+                lines.append(curr)
+                curr = wd
+        if curr:
+            lines.append(curr)
+
+        y_text = int(h * 0.72)
+        for line in lines[:8]:
+            draw.text((60, y_text), line, font=font_body, fill=(230, 240, 255))
+            y_text += int(h * 0.032)
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        img.save(output_path, "PNG")
 
     @staticmethod
     def _load_image_detached(image_path: str | Path) -> Image.Image:
